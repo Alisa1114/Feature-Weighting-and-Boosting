@@ -2,6 +2,10 @@
 # model to run: 0, 2, 3, 5, 8, 9 (for K-shots)
 # done: 2, 5
 
+#個人使用
+CUDA_VISIBLE_DEVICES=0 python main_official.py --train --exp few_shot_official_sub --dataset pascal --backbone vgg16 --model 2 --group 0 --iteration 10000 --base_lr 0.007 --num_folds 4 --crop_size 512 --batch_size 4 --val_interval 100
+
+
 CUDA_VISIBLE_DEVICES=1 python main_official.py --train --exp few_shot_official_from_scratch --dataset pascal --backbone vgg16 --model 0 --group 0 --iteration 20000 --base_lr 0.007 --num_folds 4 --crop_size 512 --batch_size 8 --val_interval 500 --scratch
 CUDA_VISIBLE_DEVICES=1 python main_official.py --train --exp few_shot_official_from_scratch --dataset pascal --backbone vgg16 --model 0 --group 1 --iteration 20000 --base_lr 0.007 --num_folds 4 --crop_size 512 --batch_size 8 --val_interval 500 --scratch
 CUDA_VISIBLE_DEVICES=1 python main_official.py --train --exp few_shot_official_from_scratch --dataset pascal --backbone vgg16 --model 0 --group 2 --iteration 20000 --base_lr 0.007 --num_folds 4 --crop_size 512 --batch_size 8 --val_interval 500 --scratch

@@ -1,16 +1,17 @@
 
 
+from torchvision import transforms
+from random import choice
 import torch.utils.data as data
 import os
 from PIL import Image
 from utils import preprocess, get_cats, AvgPool2d
 import numpy as np
 import matplotlib.pyplot as plt
-import torch 
+import torch
 import random
 random.seed(1991)
-from random import choice
-from torchvision import transforms
+
 
 class VOCSegmentationRandom(data.Dataset):
     CLASSES = [
@@ -20,8 +21,8 @@ class VOCSegmentationRandom(data.Dataset):
         'tv/monitor'
     ]
 
-    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, 
-                        crop_size=512, group=0, num_folds=4, num_shots=1, batch_size=8, iteration=10000):
+    def __init__(self, root, train=True, transform=None, target_transform=None, download=False,
+                 crop_size=512, group=0, num_folds=4, num_shots=1, batch_size=8, iteration=10000):
         self.root = root
         _voc_root = os.path.join(self.root, 'VOC2012')
         _list_dir = os.path.join(_voc_root, 'list')
@@ -33,12 +34,13 @@ class VOCSegmentationRandom(data.Dataset):
         if group == 'all':
             self.cats = range(1, 21)
         else:
-            self.cats = [x + 1 for x in sorted(get_cats('train' if train else 'val', group, num_folds))]
+            self.cats = [
+                x + 1 for x in sorted(get_cats('train' if train else 'val', group, num_folds))]
 
         self.cats_set = set(self.cats)
         self.num_shots = num_shots
         self.batch_size = batch_size
-        self.cat_dict = {c:i for i, c in enumerate(self.cats)}
+        self.cat_dict = {c: i for i, c in enumerate(self.cats)}
 
         if self.train:
             _list_f = os.path.join(_list_dir, 'train_aug.txt')
@@ -51,7 +53,8 @@ class VOCSegmentationRandom(data.Dataset):
             data_file = 'data/pascal_val_{}_{}.pkl'.format(group, num_folds)
 
         if not train:
-            file = 'data/val_pascal_{}_{}_5shot_new.pkl'.format(group, num_folds)
+            file = 'data/val_pascal_{}_{}_5shot_new.pkl'.format(
+                group, num_folds)
             self.list_data = torch.load(file)
 
         if not os.path.isfile(data_file):
@@ -64,11 +67,13 @@ class VOCSegmentationRandom(data.Dataset):
                     _image = _voc_root + line.split()[0]
                     _mask = _voc_root + line.split()[1]
                     labels = np.array(Image.open(_mask))
-                    img_label = set(x for x in np.unique(labels).tolist() if x not in [255, 0] and (labels==x).sum() > 1000)
+                    img_label = set(x for x in np.unique(labels).tolist() if x not in [
+                                    255, 0] and (labels == x).sum() > 1000)
 
                     real_label = list(img_label & self.cats_set)
                     for label in real_label:
-                        self.images[label][img_id] = (_image, _mask, real_label)
+                        self.images[label][img_id] = (
+                            _image, _mask, real_label)
 
                         self.list_images[label].append(img_id)
 
@@ -91,6 +96,8 @@ class VOCSegmentationRandom(data.Dataset):
             image_id_q = choice(self.list_images[chosen_label])
             image_id_s = choice(self.list_images[chosen_label])
         else:
+            # print(self.list_data[index])
+            # print("1")
             image_id_q, image_id_s, chosen_label = self.list_data[index]
 
         img_q, target_q = self.get_img_info(chosen_label, image_id_q)
@@ -109,13 +116,13 @@ class VOCSegmentationRandom(data.Dataset):
             target_q, target_s[0] = target_s[0], target_q
 
             return img_q, target_q, img_s, target_s, chosen_label
-        
 
     def get_img_info(self, chosen_label, image_id):
         # image_id = choice(self.list_images[chosen_label])
-
+        # print("1")
+        # print(image_id)
         image = self.images[chosen_label][image_id]
-        
+
         _img = Image.open(image[0]).convert('RGB')
 
         _target = Image.open(image[1])
@@ -133,7 +140,7 @@ class VOCSegmentationRandom(data.Dataset):
 
         target = torch.zeros_like(_target)
 
-        target[_target.int() == int(chosen_label)] = 1        
+        target[_target.int() == int(chosen_label)] = 1
 
         return _img, target
 
@@ -146,6 +153,10 @@ class VOCSegmentationRandom(data.Dataset):
 
 if __name__ == '__main__':
     dataset = VOCSegmentationRandom('data/VOCdevkit', train=False)
-
+    # dataset = VOCSegmentationRandom('datasets/VOCdevkit', train=False)
+    i = 0
     for data in dataset:
-        print()
+        print(data[4])
+        i += 1
+        if i == 5:
+            break

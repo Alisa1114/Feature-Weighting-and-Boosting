@@ -17,7 +17,7 @@ class FewShotModel(nn.Module):
     def __init__(self, model, num_shots):
         super().__init__()
 
-        self.model = model 
+        self.model = model
         self.num_shots = num_shots
 
     def forward_all(self, x):
@@ -30,7 +30,7 @@ class FewShotModel(nn.Module):
             return self.forward_train(xq, xs, ms)
         else:
             if self.model in [0, 1, 2, 4]:
-                return self.forward_val(xq, xs, ms)
+                return self.forward_val(xq, xs, ms)  # 不含contribution 2
             elif self.model == 8:
                 return self.forward_val_5shot(xq, xs, ms)
             elif self.model == 9:
@@ -39,6 +39,7 @@ class FewShotModel(nn.Module):
                 return self.forward_val_ensemble(xq, mq, xs, ms, step)
 
     def forward_train(self, xq, xs, ms):
+        """paper裡的contribution 1"""
         Fl, _, _, Fq = self.forward_all(xq)
 
         with torch.no_grad():
@@ -47,36 +48,44 @@ class FewShotModel(nn.Module):
             # early filtered feature
             xs_ = xs.clone()
             for i in range(len(xs_)):
-                xs_[i, :, ms[i]==0] = xs[i, :, ms[i]==0].mean(-1, keepdim=True)
-                
+                xs_[i, :, ms[i] == 0] = xs[i, :,
+                                           ms[i] == 0].mean(-1, keepdim=True)
+
             Fs_ = self.forward_all(xs_)[-1]
             Fs_ = F.adaptive_max_pool2d(Fs_, 1)
 
             # late filtered feature
             Fs = self.forward_all(xs)[-1]
-            Ms = F.interpolate(ms.unsqueeze(1).float(), Fs.shape[-2:]).squeeze(1)
-            c_Fs = torch.stack([fs[:, ms==0].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
-            Fs = torch.stack([fs[:, ms==1].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
+            Ms = F.interpolate(ms.unsqueeze(1).float(),
+                               Fs.shape[-2:]).squeeze(1)
+            c_Fs = torch.stack(
+                [fs[:, ms == 0].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
+            Fs = torch.stack([fs[:, ms == 1].mean(-1)[..., None, None]
+                             for fs, ms in zip(Fs, Ms)])
 
-            r = F.normalize(Fs - c_Fs, p=2)
+            r = F.normalize(Fs - c_Fs, p=2)  # relevance r
             # r = Fs - c_Fs
 
             self.train()
 
         s_ = F.relu(F.cosine_similarity(Fq, Fs_).unsqueeze(1))
-        s_ = F.interpolate(s_, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s_ = F.interpolate(s_, Fl.shape[-2:],
+                           mode='bilinear', align_corners=True)
         s_max_ = F.adaptive_max_pool2d(s_, 1)
         s_ = s_ / (s_max_ + 1e-16)
 
+        # s 是Similarity map sigma_q
         if self.model in [0, 1, 3, 6]:
             s = F.relu(F.cosine_similarity(Fq, Fs).unsqueeze(1))
         else:
             s = F.relu(F.cosine_similarity(Fq * r, Fs * r).unsqueeze(1))
 
-        s = F.interpolate(s, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s = F.interpolate(s, Fl.shape[-2:],
+                          mode='bilinear', align_corners=True)
         s_max = F.adaptive_max_pool2d(s, 1)
         s = s / (s_max + 1e-16)
 
+        # Fl 是Feature map F_q?
         if self.model in [0, 2, 3, 5, 8, 9]:
             x = torch.cat([Fl * s], 1)
         else:
@@ -84,8 +93,12 @@ class FewShotModel(nn.Module):
 
         x = self.exit_layer(x)
 
-        x = F.interpolate(x, xq.shape[-2:], mode='bilinear', align_corners=True)
+        # deconvolution 只是這樣喔==
+        # interpolate是用來up/down sample用的funtion
+        x = F.interpolate(x, xq.shape[-2:],
+                          mode='bilinear', align_corners=True)
 
+        # 回傳 sigma_q, prediction of query image, Feature map F_s, relevance r
         return s, x, Fs, r
 
     def forward_val(self, xq, xs, ms):
@@ -94,30 +107,34 @@ class FewShotModel(nn.Module):
         # early filtered feature
         xs_ = xs.clone()
         for i in range(len(xs_)):
-            xs_[i, :, ms[i]==0] = xs[i, :, ms[i]==0].mean(-1, keepdim=True)
-            
+            xs_[i, :, ms[i] == 0] = xs[i, :, ms[i] == 0].mean(-1, keepdim=True)
+
         Fs_ = self.forward_all(xs_)[-1]
         Fs_ = F.adaptive_max_pool2d(Fs_, 1)
 
         # late filtered feature
         Fs = self.forward_all(xs)[-1]
         Ms = F.interpolate(ms.unsqueeze(1).float(), Fs.shape[-2:]).squeeze(1)
-        c_Fs = torch.stack([fs[:, ms==0].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
-        Fs = torch.stack([fs[:, ms==1].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
+        c_Fs = torch.stack([fs[:, ms == 0].mean(-1)[..., None, None]
+                           for fs, ms in zip(Fs, Ms)])
+        Fs = torch.stack([fs[:, ms == 1].mean(-1)[..., None, None]
+                         for fs, ms in zip(Fs, Ms)])
 
         r = F.normalize(Fs - c_Fs, p=2)
 
         s_ = F.relu(F.cosine_similarity(Fq, Fs_).unsqueeze(1))
-        s_ = F.interpolate(s_, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s_ = F.interpolate(s_, Fl.shape[-2:],
+                           mode='bilinear', align_corners=True)
         s_max_ = F.adaptive_max_pool2d(s_, 1)
         s_ = s_ / (s_max_ + 1e-16)
-        
+
         if self.model in [0, 1, 3, 6]:
             s = F.relu(F.cosine_similarity(Fq, Fs).unsqueeze(1))
         else:
             s = F.relu(F.cosine_similarity(Fq * r, Fs * r).unsqueeze(1))
 
-        s = F.interpolate(s, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s = F.interpolate(s, Fl.shape[-2:],
+                          mode='bilinear', align_corners=True)
         s_max = F.adaptive_max_pool2d(s, 1)
         s = s / (s_max + 1e-16)
 
@@ -128,7 +145,8 @@ class FewShotModel(nn.Module):
 
         x = self.exit_layer(x)
 
-        x = F.interpolate(x, xq.shape[-2:], mode='bilinear', align_corners=True)
+        x = F.interpolate(x, xq.shape[-2:],
+                          mode='bilinear', align_corners=True)
 
         return s, x, Fs, Fs_
 
@@ -136,10 +154,13 @@ class FewShotModel(nn.Module):
         Fl, _, _, Fq = self.forward_all(xq)
 
         Fs = [self.forward_all(x)[-1][0] for x in xs]
-        Ms = [F.interpolate(m.unsqueeze(1).float(), f.shape[-2:]).squeeze(1).squeeze(0) for m, f in zip(ms, Fs)]
+        Ms = [F.interpolate(m.unsqueeze(1).float(), f.shape[-2:]
+                            ).squeeze(1).squeeze(0) for m, f in zip(ms, Fs)]
 
-        c_Fs = torch.stack([fs[:, ms==0].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
-        Fs_ = torch.stack([fs[:, ms==1].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
+        c_Fs = torch.stack([fs[:, ms == 0].mean(-1)[..., None, None]
+                           for fs, ms in zip(Fs, Ms)])
+        Fs_ = torch.stack([fs[:, ms == 1].mean(-1)[..., None, None]
+                          for fs, ms in zip(Fs, Ms)])
 
         c_Fs = c_Fs.sum(0, keepdim=True)
         Fs = Fs_.sum(0, keepdim=True)
@@ -147,7 +168,8 @@ class FewShotModel(nn.Module):
         r = F.normalize(Fs - c_Fs, p=2)
 
         s = F.relu(F.cosine_similarity(Fq * r, Fs * r).unsqueeze(1))
-        s = F.interpolate(s, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s = F.interpolate(s, Fl.shape[-2:],
+                          mode='bilinear', align_corners=True)
         s_max = F.adaptive_max_pool2d(s, 1)
         s = s / (s_max + 1e-16)
 
@@ -155,20 +177,22 @@ class FewShotModel(nn.Module):
 
         x = self.exit_layer(x)
 
-        x = F.interpolate(x, xq.shape[-2:], mode='bilinear', align_corners=True)
+        x = F.interpolate(x, xq.shape[-2:],
+                          mode='bilinear', align_corners=True)
 
         return s, x, Fs, None
 
     def forward_val_ensemble(self, xq, mq, xs, ms, step=10):
         """optimize feature fs"""
+        """paper裡的contribution 2"""
 
         Fl, _, _, Fq = self.forward_all(xq)
 
         # early filtered feature
         xs_ = xs.clone()
         for i in range(len(xs_)):
-            xs_[i, :, ms[i]==0] = xs[i, :, ms[i]==0].mean(-1, keepdim=True)
-            
+            xs_[i, :, ms[i] == 0] = xs[i, :, ms[i] == 0].mean(-1, keepdim=True)
+
         Fs_ = self.forward_all(xs_)[-1]
         Fs_ = F.adaptive_max_pool2d(Fs_, 1)
 
@@ -176,14 +200,17 @@ class FewShotModel(nn.Module):
         Fl_ori, _, _, Fs = self.forward_all(xs)
         Fs_ori = Fs
         Ms = F.interpolate(ms.unsqueeze(1).float(), Fs.shape[-2:]).squeeze(1)
-        c_Fs = torch.stack([fs[:, ms==0].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
-        Fs = torch.stack([fs[:, ms==1].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
+        c_Fs = torch.stack([fs[:, ms == 0].mean(-1)[..., None, None]
+                           for fs, ms in zip(Fs, Ms)])
+        Fs = torch.stack([fs[:, ms == 1].mean(-1)[..., None, None]
+                         for fs, ms in zip(Fs, Ms)])
 
         r = F.normalize(Fs - c_Fs, p=2)
 
         # working on support image to find the contribution of seen classes to new class
         s_ = F.relu(F.cosine_similarity(Fs_ori, Fs_).unsqueeze(1))
-        s_ = F.interpolate(s_, Fl_ori.shape[-2:], mode='bilinear', align_corners=True)
+        s_ = F.interpolate(
+            s_, Fl_ori.shape[-2:], mode='bilinear', align_corners=True)
         s_max_ = F.adaptive_max_pool2d(s_, 1)
         s_ = s_ / (s_max_ + 1e-16)
         Fl_ori_ = Fl_ori * s_
@@ -193,6 +220,7 @@ class FewShotModel(nn.Module):
         else:
             fs = Fs * r
             Fs_ori = Fs_ori * r
+        """到這裡是contribution 1"""
 
         list_fs_ = []
         list_iou = []
@@ -201,25 +229,27 @@ class FewShotModel(nn.Module):
         f = nn.Parameter(fs)
         #optimizer = torch.optim.SGD([f], lr=1e2)
         optimizer = torch.optim.Adam([f], lr=1e-2)
-        
+
         # use gradient boosting to find fs_
         for i in range(step+1):
             with torch.enable_grad():
                 list_fs_.append(f.clone())
 
                 s = F.relu(F.cosine_similarity(Fs_ori, f)).unsqueeze(1)
-                s = F.interpolate(s, Fl_ori.shape[-2:], mode='bilinear', align_corners=True)
+                s = F.interpolate(
+                    s, Fl_ori.shape[-2:], mode='bilinear', align_corners=True)
                 s_max = F.adaptive_max_pool2d(s, 1)
                 s = s / (s_max + 1e-16)
 
                 if self.model in [0, 2, 3, 5, 8, 9]:
-                    x = torch.cat([Fl_ori * s,], 1)
+                    x = torch.cat([Fl_ori * s, ], 1)
                 else:
                     x = torch.cat([Fl_ori * s, Fl_ori_], 1)
 
                 x = self.exit_layer(x)
 
-                x = F.interpolate(x, xs.shape[-2:], mode='bilinear', align_corners=True)
+                x = F.interpolate(
+                    x, xs.shape[-2:], mode='bilinear', align_corners=True)
 
                 loss = F.cross_entropy(x, ms)
 
@@ -230,10 +260,12 @@ class FewShotModel(nn.Module):
 
                 x = x.argmax(1)
                 list_x.append(x[0])
-            
-                iou = ((x == 1) & (ms == 1)).sum().float() / ((x == 1) | (ms == 1)).sum().float()
-                list_iou.append(iou)   
-        
+
+                # 原來iou算起來這麼簡單啊
+                iou = ((x == 1) & (ms == 1)).sum().float() / \
+                    ((x == 1) | (ms == 1)).sum().float()
+                list_iou.append(iou)
+
         list_iou = torch.stack(list_iou)
 
         list_fs_ = torch.cat(list_fs_)
@@ -241,17 +273,21 @@ class FewShotModel(nn.Module):
         ###############################################################
         # working on query image and use list_iou as contribution to find the final mask
         s_ = F.relu(F.cosine_similarity(Fq, Fs_).unsqueeze(1))
-        s_ = F.interpolate(s_, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s_ = F.interpolate(s_, Fl.shape[-2:],
+                           mode='bilinear', align_corners=True)
         s_max_ = F.adaptive_max_pool2d(s_, 1)
         s_ = s_ / (s_max_ + 1e-16)
         Fl_ = Fl * s_
 
         if self.model in [0, 1, 3, 6]:
-            s = F.relu(F.cosine_similarity((Fq).unsqueeze(1), (list_fs_).unsqueeze(0), dim=2))
+            s = F.relu(F.cosine_similarity(
+                (Fq).unsqueeze(1), (list_fs_).unsqueeze(0), dim=2))
         else:
-            s = F.relu(F.cosine_similarity((Fq * r).unsqueeze(1), (list_fs_).unsqueeze(0), dim=2))
+            s = F.relu(F.cosine_similarity(
+                (Fq * r).unsqueeze(1), (list_fs_).unsqueeze(0), dim=2))
 
-        s = F.interpolate(s, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s = F.interpolate(s, Fl.shape[-2:],
+                          mode='bilinear', align_corners=True)
         s_max = F.adaptive_max_pool2d(s, 1)
         s = s / (s_max + 1e-16)
         s = s.permute(1, 0, 2, 3)
@@ -266,14 +302,18 @@ class FewShotModel(nn.Module):
 
         x = self.exit_layer(x)
 
-        x = F.interpolate(x, xq.shape[-2:], mode='bilinear', align_corners=True)
-
+        x = F.interpolate(x, xq.shape[-2:],
+                          mode='bilinear', align_corners=True)
+        print(x.shape)
+        # 就是這裡把deconvolution最後的output做取分類動作的地方
         x = x.argmax(1)
-        
+        print(x.shape)
+
         list_x = x.float()
 
-        list_iou1 = ((x == 1) & (mq == 1)).sum(-1).sum(-1).float() / ((x == 1) | (mq == 1)).sum(-1).sum(-1).float()
-
+        list_iou1 = ((x == 1) & (mq == 1)).sum(-1).sum(-1).float() / \
+            ((x == 1) | (mq == 1)).sum(-1).sum(-1).float()
+        # 不知為何這裡改使用query image的iou
         final_x1 = (list_x * list_iou1[..., None, None]).sum(0, keepdim=True)
         final_x = (list_x * list_iou[..., None, None]).sum(0, keepdim=True)
 
@@ -290,10 +330,13 @@ class FewShotModel(nn.Module):
 
         Fs = [x[0] for x in list_Fs]
         Fs_ori = list_Fs
-        Ms = [F.interpolate(m.unsqueeze(1).float(), f.shape[-2:]).squeeze(1).squeeze(0) for m, f in zip(ms, Fs)]
+        Ms = [F.interpolate(m.unsqueeze(1).float(), f.shape[-2:]
+                            ).squeeze(1).squeeze(0) for m, f in zip(ms, Fs)]
 
-        c_Fs = torch.stack([fs[:, ms==0].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
-        Fs_ = torch.stack([fs[:, ms==1].mean(-1)[..., None, None] for fs, ms in zip(Fs, Ms)])
+        c_Fs = torch.stack([fs[:, ms == 0].mean(-1)[..., None, None]
+                           for fs, ms in zip(Fs, Ms)])
+        Fs_ = torch.stack([fs[:, ms == 1].mean(-1)[..., None, None]
+                          for fs, ms in zip(Fs, Ms)])
 
         c_Fs = c_Fs.sum(0, keepdim=True)
         Fs = Fs_.sum(0, keepdim=True)
@@ -310,7 +353,7 @@ class FewShotModel(nn.Module):
         f = nn.Parameter(fs)
         #optimizer = torch.optim.SGD([f], lr=1e2)
         optimizer = torch.optim.Adam([f], lr=1e-2)
-        
+
         # use gradient boosting to find fs_
         for i in range(step+1):
             with torch.enable_grad():
@@ -321,15 +364,17 @@ class FewShotModel(nn.Module):
 
                 for Fs, Fl, xs_, ms_ in zip(Fs_ori, list_Fl_ori, xs, ms):
                     s = F.relu(F.cosine_similarity(Fs, f)).unsqueeze(1)
-                    s = F.interpolate(s, Fl.shape[-2:], mode='bilinear', align_corners=True)
+                    s = F.interpolate(
+                        s, Fl.shape[-2:], mode='bilinear', align_corners=True)
                     s_max = F.adaptive_max_pool2d(s, 1)
                     s = s / (s_max + 1e-16)
 
-                    x = torch.cat([Fl * s,], 1)
+                    x = torch.cat([Fl * s, ], 1)
 
                     x = self.exit_layer(x)
 
-                    x = F.interpolate(x, xs_.shape[-2:], mode='bilinear', align_corners=True)
+                    x = F.interpolate(
+                        x, xs_.shape[-2:], mode='bilinear', align_corners=True)
 
                     loss += F.cross_entropy(x, ms_)
 
@@ -341,21 +386,24 @@ class FewShotModel(nn.Module):
                 optimizer.step()
 
                 list_x = [x.argmax(1) for x in list_x]
-            
-                iou = torch.stack([((x == 1) & (ms_ == 1)).sum().float() / ((x == 1) | (ms_ == 1)).sum().float() 
-                                for x, ms_ in zip(list_x, ms)]).mean()
 
-                list_iou.append(iou)   
-        
+                iou = torch.stack([((x == 1) & (ms_ == 1)).sum().float() / ((x == 1) | (ms_ == 1)).sum().float()
+                                   for x, ms_ in zip(list_x, ms)]).mean()
+
+                list_iou.append(iou)
+
         list_iou = torch.stack(list_iou)
 
         list_fs_ = torch.cat(list_fs_)
-
+        print(list_iou.shape)
+        print(list_iou)
         ###############################################################
         # working on query image and use list_iou as contribution to find the final mask
-        s = F.relu(F.cosine_similarity((Fq * r).unsqueeze(1), (list_fs_).unsqueeze(0), dim=2))
+        s = F.relu(F.cosine_similarity(
+            (Fq * r).unsqueeze(1), (list_fs_).unsqueeze(0), dim=2))
 
-        s = F.interpolate(s, Fl.shape[-2:], mode='bilinear', align_corners=True)
+        s = F.interpolate(s, Fl.shape[-2:],
+                          mode='bilinear', align_corners=True)
         s_max = F.adaptive_max_pool2d(s, 1)
         s = s / (s_max + 1e-16)
         s = s.permute(1, 0, 2, 3)
@@ -364,13 +412,15 @@ class FewShotModel(nn.Module):
 
         x = self.exit_layer(x)
 
-        x = F.interpolate(x, xq.shape[-2:], mode='bilinear', align_corners=True)
+        x = F.interpolate(x, xq.shape[-2:],
+                          mode='bilinear', align_corners=True)
 
         x = x.argmax(1)
-        
+
         list_x = x.float()
 
-        list_iou1 = ((x == 1) & (mq == 1)).sum(-1).sum(-1).float() / ((x == 1) | (mq == 1)).sum(-1).sum(-1).float()
+        list_iou1 = ((x == 1) & (mq == 1)).sum(-1).sum(-1).float() / \
+            ((x == 1) | (mq == 1)).sum(-1).sum(-1).float()
 
         final_x1 = (list_x * list_iou1[..., None, None]).sum(0, keepdim=True)
         final_x = (list_x * list_iou[..., None, None]).sum(0, keepdim=True)
@@ -390,11 +440,11 @@ model_urls = {
 
 
 CLASSES = [
-        'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus',
-        'car', 'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse',
-        'motorbike', 'person', 'potted-plant', 'sheep', 'sofa', 'train',
-        'tv/monitor'
-    ]
+    'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus',
+    'car', 'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse',
+    'motorbike', 'person', 'potted-plant', 'sheep', 'sofa', 'train',
+    'tv/monitor'
+]
 
 
 class VGG(FewShotModel):
@@ -406,13 +456,13 @@ class VGG(FewShotModel):
 
         if model in [0, 2, 3, 5, 8, 9]:
             self.exit_layer = nn.Sequential(
-                nn.Conv2d(128, 128, kernel_size=3, dilation=1,  padding=1),  
+                nn.Conv2d(128, 128, kernel_size=3, dilation=1,  padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(128, 2, kernel_size=1)
             )
         else:
             self.exit_layer = nn.Sequential(
-                nn.Conv2d(256, 128, kernel_size=3, dilation=1,  padding=1),  
+                nn.Conv2d(256, 128, kernel_size=3, dilation=1,  padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(128, 2, kernel_size=1)
             )
@@ -425,6 +475,7 @@ class VGG(FewShotModel):
                 if i == 13:
                     x1 = x
 
+        # 幹麼這樣寫，開什麼玩笑
         return x1, None, None, x
 
 
@@ -436,8 +487,9 @@ def make_layers(cfg, dilation=None, batch_norm=False, in_channels=3):
         elif v == 'N':
             layers += [nn.MaxPool2d(kernel_size=3, stride=1, padding=1)]
         else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=d, dilation=d)
-            
+            conv2d = nn.Conv2d(in_channels, v, kernel_size=3,
+                               padding=d, dilation=d)
+
             if batch_norm:
                 layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
             else:
@@ -463,9 +515,11 @@ def vgg16(pretrained=False, in_channels=3, **kwargs):
 
     'D': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
     """
-    model = VGG(make_layers(cfg['D_deeplab'], dilation=dilation['D'], in_channels=in_channels, batch_norm=True), **kwargs)
+    model = VGG(make_layers(cfg['D_deeplab'], dilation=dilation['D'],
+                in_channels=in_channels, batch_norm=True), **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['vgg16_bn']), strict=False)
+        model.load_state_dict(model_zoo.load_url(
+            model_urls['vgg16_bn']), strict=False)
     return model
 
 
@@ -479,7 +533,8 @@ class Bottleneck(nn.Module):
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
                                dilation=dilation, padding=dilation, bias=False)
         self.bn2 = norm(planes)
-        self.conv3 = nn.Conv2d(planes, planes * self.expansion, kernel_size=1, bias=False)
+        self.conv3 = nn.Conv2d(
+            planes, planes * self.expansion, kernel_size=1, bias=False)
         self.bn3 = norm(planes * self.expansion)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
@@ -515,7 +570,8 @@ class ResNet(FewShotModel):
     def __init__(self, block, layers, num_groups=None, beta=False, os=8, model=0, num_shots=1):
         super().__init__(model, num_shots)
         self.inplanes = 64
-        self._norm = lambda planes, momentum=0.05: nn.BatchNorm2d(planes, momentum=momentum) if num_groups is None else nn.GroupNorm(num_groups, planes)
+        self._norm = lambda planes, momentum=0.05: nn.BatchNorm2d(
+            planes, momentum=momentum) if num_groups is None else nn.GroupNorm(num_groups, planes)
 
         if os == 16:
             strides = [2, 1]
@@ -537,18 +593,20 @@ class ResNet(FewShotModel):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=strides[0], dilation=dilations[0])
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=strides[1], dilation=dilations[1], last=True)
+        self.layer3 = self._make_layer(
+            block, 256, layers[2], stride=strides[0], dilation=dilations[0])
+        self.layer4 = self._make_layer(
+            block, 512, layers[3], stride=strides[1], dilation=dilations[1], last=True)
 
         if model in [0, 2, 3, 5, 8, 9]:
             self.exit_layer = nn.Sequential(
-                nn.Conv2d(256, 128, kernel_size=3, dilation=1,  padding=1),  
+                nn.Conv2d(256, 128, kernel_size=3, dilation=1,  padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(128, 2, kernel_size=1)
             )
         else:
             self.exit_layer = nn.Sequential(
-                nn.Conv2d(512, 128, kernel_size=3, dilation=1,  padding=1),  
+                nn.Conv2d(512, 128, kernel_size=3, dilation=1,  padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(128, 2, kernel_size=1)
             )
@@ -571,10 +629,12 @@ class ResNet(FewShotModel):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample, dilation=max(1, dilation//2), norm=self._norm))
+        layers.append(block(self.inplanes, planes, stride, downsample,
+                      dilation=max(1, dilation//2), norm=self._norm))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, dilation=dilation, norm=self._norm, last=i==blocks-1 and last))
+            layers.append(block(self.inplanes, planes, dilation=dilation,
+                          norm=self._norm, last=i == blocks-1 and last))
 
         return nn.Sequential(*layers)
 
@@ -602,7 +662,8 @@ def resnet101(pretrained=False, **kwargs):
     if pretrained:
         pretrained_dict = model_zoo.load_url(model_urls['resnet101'])
         model_dict = model.state_dict()
-        overlap_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        overlap_dict = {k: v for k, v in pretrained_dict.items()
+                        if k in model_dict}
         model_dict.update(overlap_dict)
         model.load_state_dict(model_dict)
     return model

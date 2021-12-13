@@ -1,3 +1,23 @@
+from tqdm import tqdm
+from torchvision import transforms
+from torch.autograd import Variable
+from scipy.io import loadmat
+from PIL import Image
+import pdb
+import torch.optim as optim
+from torch.nn import functional as F
+import torch.nn as nn
+import os
+import argparse
+from pascal import VOCSegmentationRandom
+from coco import COCO
+from utils import AverageMeter, inter_and_union, measure
+import matplotlib.pyplot as plt
+from tensorboardX import SummaryWriter
+from ss_datalayer import SSDatalayer
+from utils import BatchThreader
+from copy import deepcopy
+import few_shot_model
 import numpy as np
 import torch
 import random
@@ -5,27 +25,6 @@ random.seed(1991)
 np.random.seed(1991)
 torch.cuda.manual_seed_all(1991)
 torch.manual_seed(1991)
-
-import few_shot_model
-from copy import deepcopy
-from utils import BatchThreader
-from ss_datalayer import SSDatalayer
-from tensorboardX import SummaryWriter
-import matplotlib.pyplot as plt
-from utils import AverageMeter, inter_and_union, measure
-from coco import COCO
-from pascal import VOCSegmentationRandom
-import argparse
-import os
-import torch.nn as nn
-from torch.nn import functional as F
-import torch.optim as optim
-import pdb
-from PIL import Image
-from scipy.io import loadmat
-from torch.autograd import Variable
-from torchvision import transforms
-from tqdm import tqdm
 
 
 parser = argparse.ArgumentParser()
@@ -39,11 +38,13 @@ parser.add_argument('--gpu', type=int, default=0,
                     help='test time gpu device id')
 parser.add_argument('--model', type=int, default=1, choices=[0, 2, 3, 5, 8, 9],
                     help='Test contribution, 0: baseline (B), 2: B + C1, 3: B + C2, 5: B + C1 + C2; K-shots: 8: B + C2, 9: B + C2 + C3')
+# 用在訓練上：0, 2
+# 用在測試上：3, 5, 8, 9
 
 # dataset setup
 parser.add_argument('--dataset', type=str, default='pascal', choices=['pascal', 'coco'],
                     help='pascal or coco')
-parser.add_argument('--group', type=str, default=0, choices=[0, 1, 2, 3, 'all'],
+parser.add_argument('--group', type=str, default=0, choices=['0', '1', '2', '3', 'all'],
                     help='the ith in PASCAL-5i or COCO-20i')
 parser.add_argument('--num_folds', type=int, default=4,
                     help='total number of folds')
@@ -96,14 +97,15 @@ try:
 except:
     args.group = args.group
 
+
 def main():
     assert torch.cuda.is_available()
     model_fname = 'logs_data_official'
-    model_fname += ('_vgg' if 'vgg' in args.backbone else '_resnet') 
+    model_fname += ('_vgg' if 'vgg' in args.backbone else '_resnet')
     model_fname += ('_pascal' if 'pascal' in args.dataset else '_coco')
     if not os.path.isdir(model_fname):
         os.mkdir(model_fname)
-        
+
     model_fname += '/deeplab_{0}_{1}_{5}_{3}_{4}_v3_{2}_model_{6}'.format(
         args.backbone, args.dataset, args.exp, args.group, args.num_folds, args.output_stride, args.model)
 
@@ -112,10 +114,10 @@ def main():
 
     if args.dataset == 'pascal':
         dataset = VOCSegmentationRandom('datasets/VOCdevkit',
-                                           train=args.train, crop_size=args.crop_size,
-                                           group=args.group, num_folds=args.num_folds,
-                                           batch_size=args.batch_size, num_shots=args.num_shots,
-                                           iteration=args.iteration)
+                                        train=args.train, crop_size=args.crop_size,
+                                        group=args.group, num_folds=args.num_folds,
+                                        batch_size=args.batch_size, num_shots=args.num_shots,
+                                        iteration=args.iteration)
     elif args.dataset == 'coco':
         dataset = COCO('datasets/coco2017/',
                        train=args.train, crop_size=args.crop_size,
@@ -138,21 +140,26 @@ def main():
     else:
         raise ValueError('Unknown backbone: {}'.format(args.backbone))
 
+    # import sys
+    # print(model)
+    # sys.exit(0)
+
     if args.dataset == 'pascal':
         if args.group == 'all':
             ref_imgs, query_imgs, query_labels, ref_labels, list_labels = [], [], [], [], []
-            
+
             for i in range(args.num_folds):
-                val_file = 'data/val_{}_{}_{}_new.pkl'.format(args.dataset, i, args.num_folds)
+                val_file = 'data/val_{}_{}_{}_new.pkl'.format(
+                    args.dataset, i, args.num_folds)
                 temp_data = torch.load(val_file)
                 ref_imgs.extend(temp_data[0][:250])
                 ref_labels.extend(temp_data[1][:250])
                 query_imgs.extend(temp_data[2][:250])
                 query_labels.extend(temp_data[3][:250])
                 list_labels.extend(temp_data[4][:250])
-                
-        else:  
-            datalayer = SSDatalayer(args.group, args.num_shots)  
+
+        else:
+            datalayer = SSDatalayer(args.group, args.num_shots)
             val_file = 'data/val_{}_{}_{}{}_new.pkl'.format(
                 args.dataset, args.group, args.num_folds, '' if args.num_shots == 1 else '_5shot')
             print(val_file)
@@ -160,7 +167,7 @@ def main():
             if args.num_shots == 1:
                 if not os.path.isfile(val_file):
                     ref_imgs, query_imgs, query_labels, ref_labels, list_labels = [], [], [], [], []
-                    
+
                     while True:
 
                         data = datalayer.dequeue()
@@ -179,8 +186,10 @@ def main():
                             if query_label.sum() < 1000:
                                 continue
 
-                            ref_img, ref_label = torch.Tensor(ref_img), torch.Tensor(ref_label)
-                            query_img, query_label = torch.Tensor(query_img), torch.Tensor(query_label)
+                            ref_img, ref_label = torch.Tensor(
+                                ref_img), torch.Tensor(ref_label)
+                            query_img, query_label = torch.Tensor(
+                                query_img), torch.Tensor(query_label)
 
                             ref_img = torch.unsqueeze(ref_img, dim=0)
                             query_img = torch.unsqueeze(query_img, dim=0)
@@ -199,25 +208,26 @@ def main():
                 else:
                     ref_imgs, ref_labels, query_imgs, query_labels, list_labels = torch.load(
                         val_file)
-            
-            else: # 5 shot:
-                val_dataset = VOCSegmentationRandom('datasets/VOCdevkit', train=False, group=args.group, 
-                                num_folds=args.num_folds, batch_size=args.batch_size, 
-                                num_shots=args.num_shots, iteration=args.iteration,
-                                crop_size=None
-                                )
+
+            else:  # 5 shot:
+                val_dataset = VOCSegmentationRandom('datasets/VOCdevkit', train=False, group=args.group,
+                                                    num_folds=args.num_folds, batch_size=args.batch_size,
+                                                    num_shots=args.num_shots, iteration=args.iteration,
+                                                    crop_size=None
+                                                    )
 
     elif args.dataset == 'coco':
         val_dataset = COCO('datasets/coco2017/',
-                            train=False, crop_size=args.crop_size,
-                            group=args.group, num_folds=args.num_folds,
-                            batch_size=args.batch_size, num_shots=args.num_shots,
-                            iteration=args.iteration)
+                           train=False, crop_size=args.crop_size,
+                           group=args.group, num_folds=args.num_folds,
+                           batch_size=args.batch_size, num_shots=args.num_shots,
+                           iteration=args.iteration)
 
     if args.train:
         writer = SummaryWriter('logs/{}'.format(model_fname))
         criterion = nn.CrossEntropyLoss(ignore_index=255)
         model = nn.DataParallel(model).cuda()
+
         if args.freeze_bn:
             for m in model.modules():
                 if isinstance(m, nn.BatchNorm2d):
@@ -238,6 +248,13 @@ def main():
         best_iou = 0
 
         from time import time
+
+        # # visualize model with tensorboard
+        # x = next(iter(dataset_loader))
+        # writer.add_graph(model, x[:-1])
+        # import sys
+        # print(model)
+        # sys.exit(0)
 
         for i, (inputs_q, targets_q, inputs_s, targets_s, label) in enumerate(dataset_loader):
             lr = args.base_lr * (1 - float(i) / max_iter) ** 0.9
@@ -261,9 +278,9 @@ def main():
             optimizer.step()
 
             result_str = ('iter: {0}/{1}\t'
-                            'lr: {2:.6f}\t'
-                            'loss: {loss.val:.4f} ({loss.ema:.4f})\t'
-                            .format(i+1, len(dataset_loader), lr, loss=losses))
+                          'lr: {2:.6f}\t'
+                          'loss: {loss.val:.4f} ({loss.ema:.4f})\t'
+                          .format(i+1, len(dataset_loader), lr, loss=losses))
 
             print(result_str)
 
@@ -279,7 +296,7 @@ def main():
                     fp_list = [0]*num_classes
                     fn_list = [0]*num_classes
                     iou_list = [0]*num_classes
-                    
+
                     with torch.no_grad():
                         for k in tqdm(range(1000)):
                             if args.dataset == 'pascal':
@@ -300,6 +317,10 @@ def main():
                                 x=[query_img, query_label, ref_img, ref_label], training=False, step=10)
 
                             # compute the loss:
+                            # print(query_img.shape)
+                            # print(output.shape)
+                            # print(output.max())
+                            # print(query_label.shape)
                             loss = criterion(output, query_label)
                             val_losses.update(
                                 loss.item(), args.batch_size)
@@ -325,7 +346,8 @@ def main():
                         if args.group == 'all':
                             class_indexes = list(range(20))
                         else:
-                            class_indexes = list(range(args.group*5, (args.group+1)*5))
+                            class_indexes = list(
+                                range(args.group*5, (args.group+1)*5))
                         mIoU = np.mean(np.take(iou_list, class_indexes))
                         print('mIoU:', mIoU)
 
@@ -341,6 +363,8 @@ def main():
                         'state_dict': model.state_dict(),
                         'optimizer': optimizer.state_dict(),
                     }, model_fname + '/best_loss.pth')
+
+                    print('save model')
 
                 if best_iou < mIoU:
                     best_iou = mIoU
@@ -365,7 +389,8 @@ def main():
 
         mapping_names = [0, 1, 2, 0, 4, 2, 1, 4, 2, 2]
 
-        checkpoint = torch.load(model_fname[:-1] + str(mapping_names[args.model]) + '/best_iou.pth')
+        checkpoint = torch.load(
+            model_fname[:-1] + str(mapping_names[args.model]) + '/best_iou.pth')
         state_dict = {
             k[7:]: v for k, v in checkpoint['state_dict'].items() if 'tracked' not in k}
         model.load_state_dict(state_dict, strict=False)
@@ -405,7 +430,7 @@ def main():
 
                     query_img = query_img.unsqueeze(0).cuda()
                     query_label = query_label.unsqueeze(0).cuda()
-                    
+
                     ref_img = [x.unsqueeze(0).cuda() for x in ref_img]
                     ref_label = [x.unsqueeze(0).cuda() for x in ref_label]
 
